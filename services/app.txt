@@ -1,0 +1,342 @@
+const express = require("express");
+const { connectToDb, getDb } = require("./db");
+const app = express();
+const cors = require("cors");
+const { response } = require("express");
+
+app.use(cors());
+app.use(express.json());
+
+let db;
+connectToDb((err) => {
+  if (!err) {
+    app.listen(3001, () => {
+      console.log("app is listenign on 3001");
+    });
+  }
+  db = getDb();
+});
+app.get(`/getUsers`, (req, res) => {
+  db.collection("users")
+    .find({})
+    .toArray()
+    .then((users) => {
+      res.status(200).json(users);
+    })
+    .catch((err) => {
+      res.status(500).json({ error: "error on getting users" });
+    });
+});
+
+app.get(`/userInfo/:userId`, (req, res) => {
+  const { userId } = req.params;
+  const userData = req.body;
+
+  db.collection("users")
+    .findOne(
+      { UserID: userId },
+      {
+        projection: {
+          userData: 1,
+          followers: 1,
+          following: 1,
+          posts: 1,
+          _id: 0,
+        },
+      }
+    )
+
+    .then((user) => {
+      if (user) {
+        res.status(200).json(user);
+        console.log("user found and sent");
+        // console.log(user);
+      } else {
+        db.collection("users")
+          .insertOne({ UserID: userId })
+          .then(() => {
+            res.status(200).json(userData);
+            console.log("new user created");
+          })
+          .catch((err) => {
+            res.status(500).json({ error: "error on getting user info" });
+          });
+      }
+    })
+    .catch((err) => {
+      res.status(500).json({ error: "error on getting user info" });
+    });
+});
+app.delete("/deleteUser/:userId", (req, res) => {
+  const { userId } = req.params;
+
+  db.collection("users")
+    .deleteOne({ UserID: userId })
+    .then((result) => {
+      if (result.deletedCount > 0) {
+        res.status(200).json({ message: "User deleted successfully" });
+        console.log("User deleted");
+      } else {
+        res.status(404).json({ error: "User not found" });
+        console.log("User not found");
+      }
+    })
+    .catch((err) => {
+      res.status(500).json({ error: "Error deleting user" });
+      console.error("Error deleting user:", err);
+    });
+});
+
+app.post(`/updateUser/:userId`, (req, res) => {
+  const { userId } = req.params;
+  console.log("updataing");
+  const {
+    name,
+    email,
+    phone,
+    address,
+    profileImageLink,
+    followers,
+    following,
+  } = req.body;
+
+  db.collection("users")
+    .updateOne(
+      { UserID: userId },
+      {
+        $set: {
+          UserID: userId,
+          userData: { name, email, phone, address, profileImageLink },
+        },
+      },
+      { upsert: true }
+    )
+    .then((result) => {
+      res.status(200).json(result);
+    })
+    .catch((err) => {
+      console.log("error updating user", err);
+      res.status(500).json({ error: "error updating user" });
+    });
+});
+
+app.post(`/newPost/:userId/:postId`, async (req, res) => {
+  const { userId, postId } = req.params;
+  console.log("posting");
+  const { title, body, imageLink } = req.body;
+  try {
+    await db.collection("posts").updateOne(
+      { UserID: userId, postID: postId },
+      {
+        $set: {
+          UserID: userId,
+          postID: postId,
+          postData: { title, body, imageLink },
+          likes: 0,
+          comments: [],
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+    await db
+      .collection("users")
+      .updateOne(
+        { UserID: userId },
+        { $addToSet: { posts: { postId, imageLink } } },
+        { upsert: true }
+      );
+    res.status(200).json("good");
+  } catch (error) {
+    console.log("error posting ", error);
+    res.status(500).json({ error: "error posting user" });
+  }
+});
+
+app.get(`/getPost/:postId`, (req, res) => {
+  const { postId } = req.params;
+  console.log("getting post");
+
+  db.collection("posts")
+    .findOne(
+      { postID: postId },
+      {
+        projection: {
+          comments: 1,
+          createdAt: 1,
+          likes: 1,
+          postData: 1,
+          _id: 0,
+        },
+      }
+    )
+
+    .then((post) => {
+      res.status(200).json(post);
+    })
+    .catch((err) => {
+      res.status(500).json({ error: "error on getting user info" });
+    });
+});
+
+app.delete(`/deletePost/:userId/:postId`, (req, res) => {
+  const { postId, userId } = req.params;
+
+  db.collection("posts")
+    .deleteOne({ postID: postId })
+    .then((result) => {
+      if (result.deletedCount === 0) {
+        return res.status(404).json({ error: "Post not found" });
+      }
+
+      return db
+        .collection("users")
+        .updateOne(
+          { UserID: userId },
+          { $pull: { posts: { postId: postId } } }
+        );
+    })
+    .then((result) => {
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      res.status(200).json({ message: "Post deleted and user updated" });
+    })
+    .catch((err) => {
+      console.error("Error deleting post:", err);
+      res
+        .status(500)
+        .json({ error: "An error occurred while deleting the post" });
+    });
+});
+
+app.put(`/updatePost/:postId`, (req, res) => {
+  const { postId } = req.params;
+  const { title, body } = req.body;
+
+  db.collection("posts")
+    .updateOne(
+      { postID: postId },
+      { $set: { "postData.title": title, "postData.body": body } }
+    )
+    .then((result) => {
+      res.status(200).json(result);
+    })
+    .catch((err) => {
+      res.status(500).json({ error: "error updating post" });
+    });
+});
+
+app.get(`/getPosts`, (req, res) => {
+  db.collection("posts")
+    .find(
+      {},
+      {
+        projection: {
+          comments: 1,
+          UserID: 1,
+          createdAt: 1,
+          likes: 1,
+          postData: 1,
+          postID: 1,
+          _id: 0,
+        },
+      }
+    )
+    .toArray()
+    .then((posts) => {
+      res.status(200).json(posts);
+    })
+    .catch((err) => {
+      res.status(500).json({ error: "error on getting posts" });
+    });
+});
+app.post(`/likePost/:userId/:postId`, (req, res) => {
+  const { userId, postId } = req.params;
+
+  db.collection("posts")
+    .updateOne({ postID: postId }, { $inc: { likes: 1 } })
+    .then(() => {
+      return db.collection("users").updateOne(
+        { UserID: userId },
+        { $addToSet: { likedPosts: postId } } // Add the post ID to the likedPosts array
+      );
+    })
+    .then(() => {
+      res.status(200).send("Liked post");
+    })
+    .catch((err) => res.status(500).send(err));
+});
+
+app.delete(`/likePost/:userId/:postId`, (req, res) => {
+  const { userId, postId } = req.params;
+
+  db.collection("posts")
+    .updateOne({ postID: postId }, { $inc: { likes: -1 } })
+    .then(() => {
+      return db.collection("users").updateOne(
+        { UserID: userId },
+        { $pull: { likedPosts: postId } } // Remove the post ID from the likedPosts array
+      );
+    })
+    .then(() => res.status(200).send("Unliked post"))
+    .catch((err) => res.status(500).send(err));
+});
+
+app.post(`/commentPost/:userId/:postId`, (req, res) => {
+  const { userId, postId } = req.params;
+  const { comment } = req.body;
+
+  db.collection("posts")
+    .updateOne(
+      { postID: postId },
+      { $push: { comments: { userId, comment, createdAt: new Date() } } }
+    )
+    .then(() => {
+      res.status(200).json({ message: "Comment added" });
+    })
+    .catch((err) => {
+      res.status(500).json({ error: "error on adding comment" });
+    });
+});
+app.post(`/follow/:userId/:followId`, (req, res) => {
+  const { userId, followId } = req.params;
+
+  // Start a session to handle transactions
+
+  // Add followId to the following array of userId
+  db.collection("users")
+    .updateOne({ UserID: userId }, { $addToSet: { following: followId } })
+    .then(() => {
+      db.collection("users").updateOne(
+        { UserID: followId },
+        { $addToSet: { followers: userId } }
+      );
+    })
+
+    .then(() => res.status(200).send("Followed user"))
+    .catch((err) => {
+      console.log(err);
+      res.status(500).send(err);
+    });
+});
+
+app.delete(`/follow/:userId/:followId`, (req, res) => {
+  const { userId, followId } = req.params;
+
+  db.collection("users")
+    .updateOne({ UserID: userId }, { $pull: { following: followId } })
+    .then(() => {
+      return db
+        .collection("users")
+        .updateOne({ UserID: followId }, { $pull: { followers: userId } });
+    })
+
+    // Remove userId from the followers array of followId
+
+    .then(() => res.status(200).send("Unfollowed user"))
+    .catch((err) => {
+      console.log(err);
+      res.status(500).send(err);
+    });
+});
